@@ -23,8 +23,16 @@ export class Ledger {
   #seq = 0;
   #day = FIRST_DAY;
   #windowClosed = false;
+  #lastDay;
+
+  // lastDay can be moved only so tests can reach clock-driven paths (hold
+  // expiry) that the brief's six-day window never gets to.
+  constructor({ lastDay = LAST_DAY } = {}) {
+    this.#lastDay = lastDay;
+  }
 
   get currentDay() { return this.#day; }
+  get lastDay() { return this.#lastDay; }
   get windowClosed() { return this.#windowClosed; }
 
   // ---------- setup ----------
@@ -321,13 +329,13 @@ export class Ledger {
       // Invariant: the capitalized amount is exactly the sum of the rounded
       // daily accruals. There is no remainder to discard.
       let expected = 0n;
-      for (let d = FIRST_DAY; d <= LAST_DAY; d += 1) {
+      for (let d = FIRST_DAY; d <= this.#lastDay; d += 1) {
         expected += Ledger.dailyAccrual(this.balance(acc.id, d, { excludeTypes: ['INTEREST_CAPITALIZATION'] }));
       }
       if (total !== expected) throw new Error(`Accrual drift on ${acc.id}: ${total} vs ${expected}`);
       if (total !== 0n) {
         this.#post({
-          account: acc.id, type: 'INTEREST_CAPITALIZATION', amount: total, valueDay: LAST_DAY,
+          account: acc.id, type: 'INTEREST_CAPITALIZATION', amount: total, valueDay: this.#lastDay,
           ref: `INT-${acc.id}`, note: `capitalizes ${mine.length} accrual records`,
         });
       }
@@ -340,7 +348,7 @@ export class Ledger {
     this.#assessFees(d);
     this.#accrueInterest(d);
     this.#expireHolds();
-    if (d === LAST_DAY) this.#capitalize();
+    if (d === this.#lastDay) this.#capitalize();
 
     const accounts = {};
     for (const acc of this.#accounts.values()) {
@@ -364,7 +372,7 @@ export class Ledger {
       diagnostics: Object.freeze(this.#diagnostics.filter((x) => x.day === d)),
     }));
 
-    if (d === LAST_DAY) this.#windowClosed = true;
+    if (d === this.#lastDay) this.#windowClosed = true;
     else this.#day = d + 1;
   }
 }
