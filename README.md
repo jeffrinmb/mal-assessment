@@ -72,3 +72,4 @@ The report has four parts.
 - [REJECTED.md](REJECTED.md): the acceptance criteria refused, with reasons, and the approaches abandoned mid-build.
 - [WORKLOG.md](WORKLOG.md): a timestamped log of the build.
 - [DESIGN.md](DESIGN.md): Part 2, architecture, trade-offs and production considerations.
+- [docs/Architecture-and-Tradeoffs.pdf](docs/Architecture-and-Tradeoffs.pdf): the same Part 2 content as a 3-page PDF with an architecture diagram. The source is `docs/architecture-tradeoffs.html`, rendered with headless Chrome.

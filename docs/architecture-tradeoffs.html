@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Architecture &amp; Trade-offs: ledger-core</title>
+<style>
+  @page {
+    size: A4;
+    margin: 14mm 15mm 14mm 15mm;
+    @bottom-left { content: "ledger-core · Architecture & Trade-offs"; font: 7.5pt "Segoe UI", Arial, sans-serif; color: #7a8190; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font: 7.5pt "Segoe UI", Arial, sans-serif; color: #7a8190; }
+  }
+  :root {
+    --ink: #1b2130; --soft: #4b5263; --faint: #7a8190; --rule: #d9dde5;
+    --accent: #0f5e57; --accent-bg: #eaf4f2; --warn: #9a3412; --warn-bg: #fdf1e9;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin: 0; color: var(--ink); background: #fff;
+         font: 9pt/1.4 "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+  h1 { font: 600 19pt/1.15 Georgia, "Times New Roman", serif; margin: 0 0 3pt; letter-spacing: -.01em; }
+  h2 { font: 600 12pt/1.2 Georgia, "Times New Roman", serif; margin: 13pt 0 5pt; padding-top: 6pt;
+       border-top: 1.2pt solid var(--ink); break-after: avoid; }
+  h2 .n { color: var(--accent); margin-right: 5pt; }
+  h3 { font-size: 9.3pt; font-weight: 700; margin: 8pt 0 3pt; break-after: avoid; color: var(--accent); }
+  p { margin: 0 0 5pt; }
+  ul, ol { margin: 0 0 5pt; padding-left: 14pt; }
+  li { margin: 0 0 2pt; }
+  code { font: 8.3pt Consolas, "Cascadia Mono", monospace; background: #f1f3f6; padding: 0 2pt; border-radius: 2pt; }
+  .meta { color: var(--soft); font-size: 8.6pt; margin-bottom: 8pt; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .lede { font-size: 9.6pt; margin: 8pt 0; padding: 7pt 9pt; background: var(--accent-bg);
+          border-left: 3pt solid var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin: 3pt 0 7pt; font-size: 8.4pt; break-inside: auto; }
+  th { text-align: left; font-weight: 600; color: var(--soft); border-bottom: 1pt solid var(--ink);
+       padding: 3pt 5pt 3pt 0; vertical-align: bottom; }
+  td { border-bottom: .5pt solid var(--rule); padding: 3pt 5pt 3pt 0; vertical-align: top; }
+  tr { break-inside: avoid; }
+  td:first-child { font-weight: 600; }
+  .callout { margin: 6pt 0; padding: 6pt 9pt; border: .8pt solid var(--accent); border-radius: 3pt; }
+  .callout.keep { break-inside: avoid; }
+  .callout .k { font-size: 7.5pt; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .risk { background: var(--warn-bg); border-color: var(--warn); }
+  .risk .k { color: var(--warn); }
+  figure { margin: 6pt 0 8pt; break-inside: avoid; }
+  figcaption { font-size: 7.8pt; color: var(--faint); margin-top: 3pt; }
+  svg text { font-family: "Segoe UI", Arial, sans-serif; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10pt; break-inside: avoid; }
+  .small { font-size: 8.4pt; color: var(--soft); }
+</style>
+</head>
+<body>
+
+<h1>Architecture &amp; Trade-offs</h1>
+<div class="meta">
+  <b>ledger-core</b>: an in-memory, append-only, value-dated account ledger · Part 2 of the take-home<br>
+  Jeffrin Mathew Benny · 27 September 2026 · github.com/jeffrinmb/mal-assessment
+</div>
+
+<div class="lede">
+  Every point below refers to the implementation (<code>src/ledger.js</code>, <code>src/constants.js</code>), not to a hypothetical system.
+  One constant runs through all four sections: the <b>back-value window N</b> (<code>BACK_VALUE_WINDOW_DAYS</code>).
+  It bounds how far history can be restated. That makes it the line for what can be cached, what can be pruned, and what needs a second approver.
+</div>
+
+<figure>
+<svg viewBox="0 0 700 150" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture of ledger-core">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5263"/>
+    </marker>
+  </defs>
+  <!-- input -->
+  <rect x="4" y="44" width="108" height="56" rx="4" fill="#fff" stroke="#4b5263"/>
+  <text x="58" y="66" text-anchor="middle" font-size="11" font-weight="600" fill="#1b2130">Event stream</text>
+  <text x="58" y="82" text-anchor="middle" font-size="9" fill="#4b5263">list order, as given</text>
+  <line x1="112" y1="72" x2="142" y2="72" stroke="#4b5263" marker-end="url(#a)"/>
+  <!-- driver -->
+  <rect x="144" y="44" width="116" height="56" rx="4" fill="#fff" stroke="#4b5263"/>
+  <text x="202" y="63" text-anchor="middle" font-size="11" font-weight="600" fill="#1b2130">Replay driver</text>
+  <text x="202" y="78" text-anchor="middle" font-size="9" fill="#4b5263">forward-only day clock</text>
+  <text x="202" y="91" text-anchor="middle" font-size="9" fill="#4b5263">late arrival → WARN</text>
+  <line x1="260" y1="72" x2="290" y2="72" stroke="#4b5263" marker-end="url(#a)"/>
+  <!-- logs -->
+  <rect x="292" y="8" width="176" height="134" rx="4" fill="#eaf4f2" stroke="#0f5e57"/>
+  <text x="380" y="26" text-anchor="middle" font-size="11" font-weight="700" fill="#0f5e57">Append-only records (frozen)</text>
+  <text x="306" y="48" font-size="9.5" fill="#1b2130">• entries: money movements</text>
+  <text x="306" y="64" font-size="9.5" fill="#1b2130">• accruals: interest sub-ledger</text>
+  <text x="306" y="80" font-size="9.5" fill="#1b2130">• auth transitions</text>
+  <text x="306" y="96" font-size="9.5" fill="#1b2130">• diagnostics: ERROR / WARN</text>
+  <text x="306" y="112" font-size="9.5" fill="#1b2130">• day-close snapshots</text>
+  <text x="306" y="131" font-size="8.5" fill="#4b5263">no update or delete path exists</text>
+  <line x1="468" y1="72" x2="498" y2="72" stroke="#4b5263" marker-end="url(#a)"/>
+  <!-- views -->
+  <rect x="500" y="8" width="196" height="62" rx="4" fill="#fff" stroke="#4b5263"/>
+  <text x="598" y="25" text-anchor="middle" font-size="11" font-weight="600" fill="#1b2130">Derived views (never stored)</text>
+  <text x="512" y="42" font-size="9" fill="#1b2130">balance(acc, valueDay, bookedThrough)</text>
+  <text x="512" y="57" font-size="9" fill="#1b2130">available = balance − active holds</text>
+  <rect x="500" y="80" width="196" height="62" rx="4" fill="#fff" stroke="#4b5263"/>
+  <text x="598" y="97" text-anchor="middle" font-size="11" font-weight="600" fill="#1b2130">Day close</text>
+  <text x="512" y="114" font-size="9" fill="#1b2130">fees → interest → hold expiry</text>
+  <text x="512" y="129" font-size="9" fill="#1b2130">→ capitalize (last day) → snapshot</text>
+  <path d="M500,112 C480,112 480,112 470,112" stroke="#4b5263" fill="none" marker-end="url(#a)"/>
+</svg>
+<figcaption>Figure 1. Balances, available funds and auth states are always computed from frozen records. A back-valued posting re-runs fee assessment for closed days at once, and interest adjustments at the next close.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Append-only at scale</h2>
+
+<h3>What breaks first at 100×: day close, on CPU, before memory</h3>
+<ul>
+  <li><code>balance()</code> is a linear scan of every entry.</li>
+  <li><code>#accrueInterest</code> calls it for every account × every value day since the window began, and filters the whole accrual list for each comparison. One close costs about <i>accounts × days elapsed × (entries + accruals)</i>, and the cost grows every day.</li>
+  <li><code>#afterPosting</code> re-runs fee assessment for <b>all</b> accounts when <b>one</b> account receives a backdated entry.</li>
+</ul>
+<p>At 100× volume the close goes from milliseconds to hours. The authorization path degrades too. <code>authState()</code> scans the transition log, and <code>activeHolds()</code> calls it once per auth, so every approval is O(auths × transitions) on the latency-critical path.</p>
+
+<h3>Where state accumulates without bound</h3>
+<p>The entry log is <i>meant</i> to grow; that is the contract. The problem is that the working state lives as long as the audit record:</p>
+<table>
+  <thead><tr><th style="width:26%">Structure</th><th style="width:44%">Grows with</th><th>Pruned?</th></tr></thead>
+  <tr><td><code>#accruals</code></td><td>accounts × days, plus adjustment records</td><td>Never, not even after capitalization</td></tr>
+  <tr><td><code>#auths</code>, <code>#authLog</code></td><td>every auth, terminal ones included</td><td>Never</td></tr>
+  <tr><td><code>#feeKeys</code></td><td>accounts × negative days</td><td>Never</td></tr>
+  <tr><td><code>#dayReports</code></td><td>days × accounts, each copying that day's entries</td><td>Never</td></tr>
+  <tr><td><code>#diagnostics</code></td><td>every error and warning</td><td>Never</td></tr>
+</table>
+
+<div class="callout">
+  <div class="k">Cheapest structural change</div>
+  <p style="margin-top:2pt"><b>A frozen checkpoint at <code>today − N</code>.</b> The value-date guard already refuses anything older than N days, so state before <code>today − N</code> can never change again.</p>
+  <ol style="margin-bottom:2pt">
+    <li><b>Checkpoint:</b> keep one closing balance and one accrual total per account at <code>today − N</code>. Balance queries fold in only the entries inside the window.</li>
+    <li><b>Scoped loops:</b> fee and interest loops walk <code>[today − N, today]</code>, and only for accounts touched since the last close. Restatement cost drops from O(history × all accounts) to O(N) per affected account.</li>
+    <li><b>Auth projection:</b> a derived <code>authId → state</code> map, updated as transitions are appended. Terminal auths older than N leave the hot map.</li>
+    <li><b>Archive:</b> fee keys, accruals and snapshots older than the checkpoint go to archive storage.</li>
+  </ol>
+  <p class="small" style="margin:0">The log stays the source of truth, and checkpoints are rebuildable caches. The change adds no new guarantee; it only uses one the guard already enforces. The log's own growth is left as a storage-partitioning problem (by account and value month), not a memory problem.</p>
+</div>
+
+<h2><span class="n">2</span>Value-dated entries in production</h2>
+<p>A back-valued entry changes facts that customers, finance and regulators have already relied on. In a CBUAE-licensed bank that creates the following surface:</p>
+<table>
+  <thead><tr><th style="width:22%">Area</th><th>Exposure</th></tr></thead>
+  <tr><td>Statements &amp; fees</td><td>Already-issued statements become wrong. Fees appear for past days the customer could not have seen or avoided. The CBUAE Consumer Protection Regulation and Standards require fees to be transparent and fair, so retroactive charging needs an explicit policy. Today this design charges such fees and never refunds them.</td></tr>
+  <tr><td>Interest &amp; profit</td><td>Accrual adjustments are correct inside the ledger. But interest already paid, reported on a statement or tax certificate, or distributed as profit on an Islamic product has to be corrected across a period boundary.</td></tr>
+  <tr><td>GL &amp; regulatory reporting</td><td>A value date in a closed month changes figures already reported: management accounts, IFRS 9 inputs, and prudential returns filed with CBUAE. Finance must decide between a prior-period adjustment and a current-period correction.</td></tr>
+  <tr><td>Financial crime</td><td>Monitoring usually runs on booking time, so back-valuing opens a gap between when money moved economically and when monitoring saw it. Unexplained back-valuation is also a classic insider-fraud pattern: an overdraft erased, interest shifted, a fee avoided. goAML reports must carry both dates.</td></tr>
+  <tr><td>Irreversible decisions</td><td>Auth approvals and declines were made on the balance known at the time, and restatement cannot undo them. Complaints cite the balance the customer saw, so both views must be reproducible. That is what <code>balance(acc, day, {bookedThrough})</code> provides.</td></tr>
+  <tr><td>Audit</td><td>Every restated figure must trace to the entry that caused it, the person who booked it and the reason.</td></tr>
+</table>
+
+<div class="callout">
+  <div class="k">Control to add before go-live</div>
+  <p style="margin-top:2pt"><b>Back-value authorization with an impact record.</b></p>
+  <ul style="margin-bottom:2pt">
+    <li>Every entry dated before its booking day carries a mandatory reason code.</li>
+    <li>Beyond N days, or into a closed accounting period, the entry needs a second approver (maker-checker) before it posts.</li>
+    <li>On posting, the system writes an impact record linked to the entry: every fee, accrual adjustment and restated balance it triggered. Operations uses that record to decide on refunds and customer notices.</li>
+  </ul>
+  <p class="small" style="margin:0">The hard limit already exists in code (<code>BACK_VALUE_LIMIT</code>). In production, a breach goes to a checker queue instead of being refused.</p>
+</div>
+
+<h2><span class="n">3</span>Authorization lifecycle</h2>
+<p>In this model an authorization can end in three ways other than a matching settlement:</p>
+<table>
+  <thead><tr><th style="width:17%">Ending</th><th style="width:17%">In code</th><th style="width:24%">Real-world scenario</th><th>Behavior I would mandate</th></tr></thead>
+  <tr><td>Declined at birth</td><td><code>authorize()</code> → <code>DECLINED</code></td><td>Insufficient available balance, or a risk decline.</td><td>Record the decision with the available balance it was judged on (done). Place no hold. Route any later settlement against it to suspense (done). Return a reason code to the scheme.</td></tr>
+  <tr><td>Expired</td><td><code>#expireHolds()</code> → <code>EXPIRED</code></td><td>The merchant never clears: an abandoned order, or a fuel pre-auth never completed.</td><td>Release the full hold after the scheme period, driven by a <b>scheduler</b>. Here expiry runs only inside <code>closeDay()</code>, so an inactive account keeps its hold forever (the known-failing test). A settlement after expiry goes to suspense, and ops force-posts it where the scheme obliges payment.</td></tr>
+  <tr><td>Remainder released on under-settlement</td><td><code>settle()</code> records <code>released</code></td><td>The final amount is below the authorized amount (fuel, hotels, restaurants).</td><td>Release the difference in the same transition (done). For merchant categories that clear in several pieces, keep the remainder open until expiry.</td></tr>
+</table>
+
+<div class="two">
+  <div>
+    <h3 style="margin-top:2pt">Situations that leave an auth open</h3>
+    <p><b>Over-settlement:</b> the settlement goes to suspense and the auth stays <code>ACTIVE</code>. The mandate is a tolerance per merchant category (tips, FX movement). Within tolerance, settle and debit the excess. Above it, go to suspense and chargeback review, and close the hold so it cannot be released and then charged again when ops force-posts.</p>
+    <p><b>Active at window end:</b> this is expected. The hold keeps reducing available balance until the expiry scheduler picks it up.</p>
+  </div>
+  <div>
+    <h3 style="margin-top:2pt">Endings the model lacks</h3>
+    <p><b>Merchant reversal or void:</b> a <code>REVERSED</code> state, idempotent because reversals are retried.</p>
+    <p><b>Incremental authorization:</b> increase the existing auth, and check only the increment against available.</p>
+    <p><b>Account freeze or closure:</b> keep holds on a frozen account and route its settlements to review. Block closure while holds are open.</p>
+  </div>
+</div>
+<p class="small">The rule behind all of these: an auth ends only through an explicit, logged transition, and a hold is never quietly dropped. The transition log already has that shape. What it lacks is a clock.</p>
+
+<h2><span class="n">4</span>What I cut and why</h2>
+<table>
+  <thead><tr><th style="width:22%">Cut</th><th style="width:22%">Why</th><th>Production risk deferred</th></tr></thead>
+  <tr><td>Double-entry and GL</td><td>The brief is about customer balances. Only a one-sided suspense account exists.</td><td><b>The largest gap.</b> Nothing proves the books balance: suspense, fees and interest have no contra-legs, so nothing reconciles to the GL.</td></tr>
+  <tr><td>Persistence</td><td>Out of scope by instruction</td><td>A crash loses everything. Freezing objects only proves immutability within a single process.</td></tr>
+  <tr><td>Concurrency</td><td>A single ordered stream</td><td>The check-then-hold in <code>authorize()</code> is a race: two concurrent auths can both pass on the same funds. It needs a per-account serial queue or a conditional write.</td></tr>
+  <tr><td>Inbound idempotency</td><td>The stream is replayed once</td><td>A redelivered event posts again, because <code>ref</code> is not a unique key.</td></tr>
+  <tr><td>Hold-expiry clock</td><td>Only event-driven closes exist</td><td>Unsettled holds block funds on inactive accounts indefinitely.</td></tr>
+  <tr><td>Calendar, time zones, cut-offs</td><td>"Day" is an integer</td><td>No weekends, holidays or cut-off times. AED and BHD books have different local cut-offs, so "end of day" is undefined across them.</td></tr>
+  <tr><td>FX</td><td>Not needed in-window</td><td>A negative non-AED account raises an error and is charged no fee: a revenue leak until an FX rate policy exists.</td></tr>
+  <tr><td>Fee refund policy</td><td>No rule was given</td><td>Customers keep fees caused by entries the bank later reversed: a conduct and complaints risk.</td></tr>
+  <tr><td>Multi-clearing, increments, over-settlement tolerance</td><td>Single clearings only</td><td>Hotel, fuel and tip flows land in suspense and need manual work.</td></tr>
+  <tr><td>Forward-dated entries</td><td>Not needed</td><td>Scheduled payments cannot be modeled. They are refused today.</td></tr>
+  <tr><td>Debit interest, limits, account states</td><td>Out of scope</td><td>Overdrafts are priced only by the flat fee. There is no limit, freeze or closure.</td></tr>
+  <tr><td>Indexes and checkpoints</td><td>Correctness first</td><td>Day close is super-linear in history (§1).</td></tr>
+  <tr><td>Day-count convention</td><td>A flat daily rate</td><td>Products quoted as an annual rate on Actual/365 or Actual/360 would accrue differently.</td></tr>
+</table>
+
+<div class="callout risk keep">
+  <div class="k">Deliberately not cut</div>
+  <p style="margin:2pt 0 0">Integer minor units · a single rounding point · capitalization defined as the sum of the rounded accruals · frozen records with derived balances · the bitemporal balance query · suspense instead of silently dropping entries. Each cut above leaves the system <i>incomplete</i>. Getting any of these wrong would make it <i>incorrect</i>.</p>
+</div>
+
+</body>
+</html>
