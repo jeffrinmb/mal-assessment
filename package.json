@@ -1,0 +1,15 @@
+{
+  "name": "ledger-core",
+  "version": "0.1.0",
+  "description": "In-memory, append-only, value-dated account ledger core (take-home assessment).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "replay": "node src/replay.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:failing": "node --test \"known-failing/**/*.js\""
+  }
+}
